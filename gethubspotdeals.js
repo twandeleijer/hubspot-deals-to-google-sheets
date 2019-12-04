@@ -41,6 +41,9 @@ function getDeals() {
     }
   });
 
+  // Add additional columns headers
+  columnHeaders.push("conversionRate","cycleTime");
+
   // Initialize an array to store the deals into
   var dealsArray = Array();
   dealsArray.push(columnHeaders); // Push the column header into this array
@@ -62,12 +65,15 @@ function getDeals() {
     return stages;
   }
 
-  // Function for later to replace the dealstageId with a human readable label
-  function dealstageLabel(pipelineIdFilter,dealstageId){
+  // Function to replace the grab the dealstage details
+  function dealstageDetails(pipelineIdFilter,dealstageId){
     var pipelineObject = pipelines.filter(function(pipeline){return (pipeline.pipelineId === pipelineIdFilter);} )[0];
     var stages = pipelineObject.stages;
     var stageLabel = stages.filter(function(stage){return (stage.stageId===dealstageId);} )[0].label;
-    return stageLabel;
+    var isClosed = stages.filter(function(stage){return (stage.stageId===dealstageId);} )[0].metadata.isClosed;
+    var probability = stages.filter(function(stage){return (stage.stageId===dealstageId);} )[0].metadata.probability;
+    var dealStageDetails = {stageLabel: stageLabel,isClosed: isClosed,probability: probability};
+    return dealStageDetails;
   }
 
   // Function to transform timestamps into datevalues that Google Sheets understands
@@ -77,6 +83,13 @@ function getDeals() {
     var millisecondsToDays = 1000 * 60 * 60 * 24; // The amount of milliseconds per day
     var gsheetsDatevalue = (inputTimestamp + timeStampOffset) / millisecondsToDays
     return gsheetsDatevalue;
+  }
+
+  // Function to calculate the difference in days between two timestamps
+  function daysDiff(start,end) {
+    var timeStampDiff = end - start;
+    var daysDiff = timeStampDiff / 1000 / 60 / 60 / 24;
+    return daysDiff;
   }
 
   // This while loop will go through the paginated API response, until it has fetched all results
@@ -114,7 +127,7 @@ function getDeals() {
         else if (property === 'dealstage'){
           var pipelineValue = (deal.properties.hasOwnProperty('pipeline')) ? deal.properties['pipeline'].value : "";
           var dealStageValue = (deal.properties.hasOwnProperty(property)) ? deal.properties[property].value : "";
-          var propertyValue = dealstageLabel(pipelineValue,dealStageValue);
+          var propertyValue = dealstageDetails(pipelineValue,dealStageValue).stageLabel;
         }
         else {
           var propertyValue = (deal.properties.hasOwnProperty(property)) ? deal.properties[property].value : "";
@@ -127,7 +140,7 @@ function getDeals() {
         if (property === 'dealstage'){
           var pipelineValue = (deal.properties.hasOwnProperty('pipeline')) ? deal.properties['pipeline'].value : "";
           var dealStageValue = (deal.properties.hasOwnProperty(property)) ? deal.properties[property].value : "";
-          var propertyValue = dealstageLabel(pipelineValue,dealStageValue);
+          var propertyValue = dealstageDetails(pipelineValue,dealStageValue).stageLabel;
         } else {
           var propertyValue = (deal.properties.hasOwnProperty(property)) ? deal.properties[property].value : "";
         }
@@ -150,14 +163,12 @@ function getDeals() {
         if(index>0){
           var t1 = version.timestamp;
           var t2 = stageVersions[index-1].timestamp;
-          var timeInStage = t2 - t1;
-          var daysInStage = timeInStage / 1000 / 60 / 60 / 24;
+          var daysInStage = daysDiff(t1,t2);
           version.timeInStage = daysInStage;
         } else {
           var t1 = version.timestamp;
           var t2 = Date.now();
-          var timeInStage = t2 - t1;
-          var daysInStage = timeInStage / 1000 / 60 / 60 / 24;
+          var daysInStage = daysDiff(t1,t2);
           version.timeInStage = daysInStage;
         }
       });
@@ -172,6 +183,31 @@ function getDeals() {
         }
       });
 
+      // Push the closed data into the columns
+      var pipelineValue = (deal.properties.hasOwnProperty('pipeline')) ? deal.properties['pipeline'].value : "";
+      var dealStageValue = (deal.properties.hasOwnProperty('dealstage')) ? deal.properties['dealstage'].value : "";
+      var isClosed = dealstageDetails(pipelineValue,dealStageValue).isClosed;
+      if (isClosed === "true") {
+        // Calculate the cycletime in days
+        var t1 = (deal.properties.hasOwnProperty('createdate')) ? deal.properties['createdate'].value : "";
+        var t2 = deal.properties.dealstage.versions[0].timestamp;
+        var cycleTime = daysDiff(t1,t2);
+
+        // Set the conversion rate
+        var probability = dealstageDetails(pipelineValue,dealStageValue).probability;
+        if (probability === "1.0") {
+          var conversionRate = 1;
+        } else {
+          var conversionRate = 0;
+        }
+        // Push both variable into the array
+        dealArray.push(conversionRate,cycleTime);
+      } else {
+        var cycleTime = null;
+        var conversionRate = null;
+        dealArray.push(conversionRate,cycleTime);
+      }
+
       // Push the deal into the deals array, depending on if the pipeline is set
       var pipelineValue = (deal.properties.hasOwnProperty('pipeline')) ? deal.properties.pipeline.value : "";
       if (pipelineValue === pipelineId){
@@ -185,6 +221,7 @@ function getDeals() {
 function writeDeals() {
   var sheetNameDeals = "HubSpotDeals"; // Set the name of the sheet
   var deals = getDeals(); // Fetch the deal data
+//  Logger.log(deals);
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(sheetNameDeals);
   if (sheet == null){
